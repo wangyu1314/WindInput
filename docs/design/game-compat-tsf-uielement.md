@@ -182,6 +182,83 @@ Valve 不可能这么设计。**别再拿那 5 条当判据。**
 与本输入法无关，别把两件事并成一件。
 
 
+### 1.3 ⛔ 上屏后第一个退格失效：是**游戏吞的**，白名单 `product_id` 决定（2026-09-13 定案）
+
+**症状**：Dota 2 / CS2 里中文上屏后，紧接着的第一下退格无效，第二下起正常。只在游戏里出现，
+记事本等宿主无此现象；**回车在同一位置正常**。
+
+#### 判据：一次日志就能定案
+
+`wind_tsf.dota2.*.log`（`level=trace`）里，那一键只有两行：
+
+```
+OnTestKeyDown: wParam=0x08
+compat.context_status focusSession=? flags=0x80000000 readonly=0 loading=0
+```
+
+此后**什么都没有**。三条缺失各自独立成立：
+
+| 缺什么 | 说明 |
+|---|---|
+| 无 `compat.key phase=test_down` | `pfEaten` 恒 FALSE——**所有**吃键分支都必然紧跟一行 `_LogKeyDecision` |
+| 无 `Sending key event` | 一个字节都没发给引擎，core 侧根本不知道按过退格 |
+| 无 `phase=down` | 游戏在我们返回 FALSE 后**根本不调 `OnKeyDown`**，键全程在它手里 |
+
+**退格两次、回车一次，三者日志逐字相同**，而回车表现正常 ⇒ 差异 100% 在游戏侧。
+这也是 `session_key` 分支的设计内行为：上屏后 `composing=0 candidates=0`，
+`_HasInputSession()` 为假，退格本就该还给宿主。
+
+#### ⛔ 已各花一轮真机证伪的方向（勿重试）
+
+- **改上屏形态**：组合区 `SetText` 改为 `SetText("")` + `EndComposition` + `InsertTextAtSelection`
+  （即本函数注释里那个被废弃的历史实现）——无效。
+- **实现 `ITfReadingInformationUIElement`**（`21c4e33e`）——无效。Dota 确实 QI 它（一次会话 50 次）
+  并读 `GetString`（17 次），但**只在组合活跃期间**读、上屏后一次都不读，空串没机会告诉它。
+  ★ 副产品：开启后**我们的嵌入编码会显示在游戏的专门小栏里**，与不实现时的显示方式不同
+  ——这是真实 UI 差异，要不要采用属产品选择，代码可从 `21c4e33e` 原样捞回。
+- **拆 `UI_LESS_THREAD` / `HOST_DRAWS` 判据**（`wind-ipc/src/protocol.rs`）——无效。
+  不在白名单时 Dota 照样回 `show=0`，声称接管却不画。
+- **用「宿主读不读候选数据」区分会不会画**——无效。两种状态都完整读完
+  （`GetUpdatedFlags` → `GetPageIndex` → `GetString`×N），不在白名单时读得**更多**。
+
+#### ★ 触发条件精确到白名单的一个字段
+
+`imemanager.dll` 的 `.rdata` 偏移 **`0x33E60`** 起是 **145 条 × 24 字节**的结构体数组：
+
+```c
+struct ImeEntry { const char* name; const char* canonical; uint64_t product_id; };
+```
+
+`product_id` 决定走哪条 IME 兼容分支，**退格坏不坏由它定**：
+
+| `product_id` | `canonical` | 上屏后首个退格 |
+|---|---|---|
+| `0x210000` | Sogou Pinyin | ✅ 正常 |
+| `0x110000` / `0x810000` / `0x910000` / `0xA10000` / `0xC10000` | Google / QQPinyin / NianQing / WuBi / JJ Pinyin | ❌ 吞 |
+| `0x410000` | **Unknown**（兜底类） | ❌ 吞 |
+| `0x030000` 等微软自带系 | 郑码 / 双拼 / 全拼… | ❌ 吞 |
+
+**全表逐个真机试过，只有 Sogou 那条分支不吞退格**，而它对应的四个名字全是搜狗品牌，
+不能拿来发版 ⇒ **改白名单别名这条路走不通**，`DOTA2_ALIAS` 维持 `中文 (简体) - 郑码` 不动。
+
+⚠️ 两个采样陷阱：`拼音输入法` 看着像中立通用名，其 `canonical` 实为 `Unknown`；
+`微软五笔` 的**实际注册名是 `Microsoft Wubi`**（英文，同在表里、同为 `0xA10000`），
+所以「微软五笔也坏」是**命中白名单**的数据点，不是未命中。
+
+提取方法：解析 PE 段表把字符串文件偏移转成 VA（`ImageBase=0x180000000`），
+再在 `.rdata` 里搜 8 字节小端指针，即可定位数组并按 24 字节步进读出全表。
+
+#### 现状：`dota2_compat` 是个二选一
+
+开 ＝ 有候选窗、上屏后首个退格失效；关 ＝ 退格正常、无候选窗。设置页应把这个权衡说清。
+三条出路**均未实施**：
+
+- **A 维持现状**，把权衡写进设置说明；
+- **B 关 compat 时我们自己画候选**：⚠️ 有 §4.5 那个黑屏卡死的复发风险——独占判据逐键抖动，
+  正是「`host_draws` 无条件压窗」才断开那个反馈环；
+- **D 开 compat 时我们接管退格**（吃键 + `ReplacePrecedingChars` 代删）：游戏收不到退格后它的
+  composition 缓存不清 ⇒ **所有**退格都要我们代劳，语义变了，且是 Dota 专用 hack。
+
 ## 2. 外部规范要点（已核对）
 
 来源：Microsoft Learn「UILess Mode Overview」、`ITfUIElementSink::BeginUIElement`、

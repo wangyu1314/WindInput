@@ -117,6 +117,61 @@ QQ 的 reported compStart 正常且稳定，但同一按键后会先后出现：
 前帧确为 `TSF_COMPOSITION`、其 caret 等于本帧 reported compStart、且该点仍等于已锁起点时，
 后续 `TSF_SELECTION` 才被判成正常组合跨度而禁止重锁。UI 的右边界钳制只放大了观感，不是根因。
 
+### F 类：游戏宿主——`GetTextExt` 返回**固定**垃圾值
+
+代表：**流放之路（`PathOfExile.exe`）**；论坛另有多款游戏反馈相同症状（候选窗钉在屏幕左上角）。
+
+★ 它**不接管 UI**（`uielement state reported: flags=0x0 (host_draws=0 ui_less=0)`、
+`BeginUIElement ok id=0 show=1`），候选窗是我们自己画的，所以这条**是我们能修的**——与 Dota 2
+那类「宿主自绘候选、数据侧调不动」是**完全不同**的两件事，别套那边的结论
+（见 `../design/game-compat-tsf-uielement.md`）。
+
+2026-09-12 真机日志（`wind_tsf.PathOfExile.47636.log`）里两个坐标**整场一个像素都没变过**：
+
+| 量 | 值 | 判定 |
+|---|---|---|
+| selection 的 caret rect | `(3839, 2063, 3840, 2063)` | 屏幕右下角、**高度 0** ⇒ 判无效 |
+| composition start rect | `(13, 9, 13, 44)` | 屏幕左上角、高度 35 ⇒ **被降级采信** |
+| `GetScreenExt` | `(273, 216, 2833, 1656)` | 游戏窗口真实范围，**合理** |
+
+于是锚点降级（caret 无效 → 用组合起点，见 `CaretEditSession.cpp` 的「★ 锚点降级」）采信了
+`(13,44)`，候选窗就钉死在屏幕左上角。两个值都是常量 ⇒ 该宿主根本没真正实现 `GetTextExt`，
+**真实光标位置无从获得**；但「识别出这是垃圾」可行：
+
+★ **判据：组合起点落在 `GetScreenExt` 之外**——`(13,44)` 不在 `(273,216)-(2833,1656)` 内。
+这正是 `CaretEditSession.cpp` 降级分支里那句「若实测可靠，将来可取代『所有显示器』做越界校验」
+所等的证据：本例中 `GetScreenExt` 可靠（同一场里还出现过 `(0,0,3840,2160)`，会随状态变化，
+不是死值）。
+
+⚠️ 但**别无条件信它**：`GetScreenExt` 在 shell context 上实测返回过退化矩形 `(0,1368,0,1368)`
+（同文件另一段注释），校验前先确认它自身非退化。
+
+⛔ **流放之路本身无解，别再为它投入**：同一宿主上**搜狗与微软拼音的候选窗也在左上角**
+（2026-09-12 用户实测）——它没有通过任何通道给出有效位置。本类的价值在于**其它**游戏：
+论坛有多款游戏反馈同类症状，其中若有走 IMM32 通道的，就能救。
+
+### ★ 第三条通道：IMM32 的 `CANDIDATEFORM`（已加探测，待实测数据）
+
+游戏类宿主往往**根本没打算**用 TSF 传坐标：SDL 的 `SDL_SetTextInputRect` 在 Windows 上就实现为
+`ImmSetCandidateWindow`（写 `CANDIDATEFORM`），多数自绘 UI 的游戏同理，而这条路**不会**反映到
+`GetTextExt` 上。我们此前只听 TSF 一条通道，这是缺口。
+
+`CaretEditSession.cpp` 的降级分支已加 **只记日志、不改行为** 的探测（`ImmGetCandidateWindow` /
+`ImmGetCompositionWindow`，同时打客户区与 `ClientToScreen` 后的屏幕坐标）：
+
+```
+CaretEditSession: IMM32 probe hwnd=0x... cand=1 style=0x... client=(x,y) screen=(x,y) area=(...) | comp=...
+```
+
+`cand=1` 且坐标合理 ⇒ 该宿主有救，可把这条接进降级链；`cand=0` 或 `无 IMC` ⇒ 与流放之路同类，无解。
+⚠ 注意 `ptCurrentPos` 是**客户区**坐标，比对时别和屏幕坐标混参照系。
+
+**未实施**的修法方向，均需真机验证：
+① 降级采信组合起点前做越界校验（组合起点不在 `GetScreenExt` 内即不采信，让 caret 保持无效）；
+② 把上述 IMM32 坐标接进降级链（取决于探测数据）；
+③ 都拿不到时用窗口内兜底锚点（游戏聊天框多在下方，底部中央远比左上角合理），
+这需要把 `GetScreenExt` 经 IPC 传到服务端。
+
 ## 三、必测矩阵
 
 **每次改动候选窗定位相关代码，以下组合都要跑一遍。** 单个宿主全绿完全不能说明问题——本轮
@@ -162,6 +217,10 @@ caret_probe → 提前首显: ...
 5. **起点与末端对打？** 相邻日志在 `src=tsf_composition` 与 `src=tsf_selection` 间交替，reported
    `compStart` 不变，却出现 `组合起点重锁` 且 `UpdateCandidates pos=` 来回切换——把组合跨度误当成
    起点错误了。
+
+6. **候选窗钉在屏幕角落一动不动？** 看 TSF 日志的 `caret 无效(succeeded=? h=0)，降级用组合起点`
+   与紧随的 `context GetScreenExt =`：若组合起点不在 `GetScreenExt` 内，是 F 类宿主给的固定垃圾
+   坐标，不是我们的定位逻辑出错——别去查重锁/校正那条链。
 
 一个统计口径的提醒：**连打时每打一个字光标本就前移一个字宽，随之而来的 reshow 是正确的跟随，
 不是漂移。** 统计漂移率时必须只看「首显后、下一次按键前」的位置变化，否则会把正常跟随算成缺陷
