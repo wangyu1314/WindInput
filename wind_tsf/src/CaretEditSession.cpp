@@ -1,6 +1,10 @@
 #include "CaretEditSession.h"
 #include "TextService.h"
 #include "Globals.h"
+// 仅供下方「IMM32 候选位置探测」使用：游戏类宿主多经 IMM32 声明候选位置，而那条路
+// 不反映到 TSF 的 GetTextExt 上（见 DoEditSession 里探测点的注释）。
+#include <imm.h>
+#pragma comment(lib, "imm32.lib")
 
 CCaretEditSession::CCaretEditSession(ITfContext* pContext)
     : _refCount(1)
@@ -246,6 +250,57 @@ STDAPI CCaretEditSession::DoEditSession(TfEditCookie ec)
             else
             {
                 WIND_LOG_DEBUG(L"CaretEditSession: context GetScreenExt failed\n");
+            }
+
+            // ── IMM32 候选位置探测（只记日志，**不改行为**）─────────────────────────
+            //
+            // 走到这里说明 TSF 那条路没给出可用的 caret。游戏类宿主往往**根本没打算**用
+            // TSF 传坐标：SDL 的 `SDL_SetTextInputRect` 在 Windows 上实现为
+            // `ImmSetCandidateWindow`（CANDIDATEFORM），多数自绘 UI 的游戏同理——这条路
+            // 不会反映到 `GetTextExt` 上。流放之路实测 `GetTextExt` 恒回两个常量垃圾值
+            // （caret 在屏幕右下角且 h=0、组合起点在左上角 (13,44)），候选窗因此钉死在左上角；
+            // 同一宿主上搜狗与微软拼音表现一致，说明**那一款**连 IMM32 也没设，无解。
+            // 但论坛另有多款游戏反馈同类症状，其中若有设了 CANDIDATEFORM 的，这就是它们
+            // 唯一可用的坐标来源 —— 先攒实测数据，够了再决定要不要接进降级链。
+            //
+            // ⚠ CANDIDATEFORM/COMPOSITIONFORM 的 ptCurrentPos 是**客户区**坐标，
+            //   故一并打出 ClientToScreen 之后的值，避免日后比对时把两个参照系混起来。
+            // ⚠ 只在降级分支打，频率与上面的 GetScreenExt 一致，不会每帧刷屏。
+            HWND hwndHost = nullptr;
+            if (SUCCEEDED(pContextView->GetWnd(&hwndHost)) && hwndHost != nullptr)
+            {
+                HIMC himc = ImmGetContext(hwndHost);
+                if (himc != nullptr)
+                {
+                    CANDIDATEFORM cand = {};
+                    COMPOSITIONFORM comp = {};
+                    const BOOL okCand = ImmGetCandidateWindow(himc, 0, &cand);
+                    const BOOL okComp = ImmGetCompositionWindow(himc, &comp);
+                    POINT ptCand = cand.ptCurrentPos;
+                    POINT ptComp = comp.ptCurrentPos;
+                    ClientToScreen(hwndHost, &ptCand);
+                    ClientToScreen(hwndHost, &ptComp);
+                    WIND_LOG_DEBUG_FMT(
+                        L"CaretEditSession: IMM32 probe hwnd=0x%p cand=%d style=0x%08X "
+                        L"client=(%ld,%ld) screen=(%ld,%ld) area=(%ld,%ld,%ld,%ld) | "
+                        L"comp=%d style=0x%08X client=(%ld,%ld) screen=(%ld,%ld)\n",
+                        (void*)hwndHost,
+                        okCand ? 1 : 0, cand.dwStyle,
+                        cand.ptCurrentPos.x, cand.ptCurrentPos.y, ptCand.x, ptCand.y,
+                        cand.rcArea.left, cand.rcArea.top, cand.rcArea.right, cand.rcArea.bottom,
+                        okComp ? 1 : 0, comp.dwStyle,
+                        comp.ptCurrentPos.x, comp.ptCurrentPos.y, ptComp.x, ptComp.y);
+                    ImmReleaseContext(hwndHost, himc);
+                }
+                else
+                {
+                    WIND_LOG_DEBUG_FMT(L"CaretEditSession: IMM32 probe hwnd=0x%p 无 IMC（宿主未开 IMM32 上下文）\n",
+                                       (void*)hwndHost);
+                }
+            }
+            else
+            {
+                WIND_LOG_DEBUG(L"CaretEditSession: IMM32 probe 取不到宿主 HWND\n");
             }
         }
     }
