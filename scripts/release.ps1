@@ -1229,7 +1229,8 @@ function Invoke-SignDraft ([string]$tagName) {
         $retry = 0
         while (-not $signReady) {
             Write-Host ""
-            Warn "[!] 签名会话不可用 —— 打开 SimplySign 建立会话后再继续 (有效期 2 小时)。"
+            Warn "[!] 签名会话不可用 —— 建立签名会话后再继续 (有效期 2 小时)。"
+            Gray "    具体步骤见 sign.ps1 -Status 的提示 (可在 sign.local.ps1 里配 `$WIND_SIGN_SESSION_HINT)。"
             $retry++
             if ($retry -gt 5) { ErrMsg "会话仍不可用, 已放弃。"; return 1 }
             if (-not (Confirm-Step "    已建立会话, 重新体检?" $true $true)) {

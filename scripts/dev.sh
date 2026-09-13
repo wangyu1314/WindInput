@@ -625,7 +625,7 @@ do_repl() {
 require_remote() {
     if [ -z "$WIND_REMOTE" ]; then
         err "未配置 WIND_REMOTE：请在 $SCRIPT_DIR/deploy.local 设置 SSH 目标"
-        echo "  示例: WIND_REMOTE=me@192.168.5.30"
+        echo "  示例: WIND_REMOTE=me@192.0.2.20"
         return 1
     fi
 }
@@ -1619,7 +1619,7 @@ menu_loop() {
         read -e -r -p "请输入选项: " line
         [ -n "$line" ] && history -s "$line"
         # 只把【命令词】转小写, 其余原样保留 —— 远程诊断命令的参数是 Windows 路径,
-        # 整串小写化会让 'C:/Users/me/...' 变成找不到的路径(NTFS 不区分大小写,
+        # 整串小写化会让 'C:/Users/Me/...' 变成找不到的路径(NTFS 不区分大小写,
         # 但经 PowerShell 传回的文件名与 grep 模式是区分的)。
         local choice rest
         choice="$(printf '%s' "${line%% *}" | tr '[:upper:]' '[:lower:]')"

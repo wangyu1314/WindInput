@@ -2,7 +2,7 @@
 # 供 dev.sh 的 push / pull 命令通过 SSH 连到 Windows 实测机使用。
 
 # SSH 目标（共用）
-WIND_REMOTE='me@192.168.5.30'
+WIND_REMOTE='me@192.0.2.20'
 
 # 安装目录（scp 正斜杠风格 C:/...）。release 与 debug 分开，对应 p1 / pd1：
 #   p1  / pm*   → WIND_REMOTE_DIR_RELEASE
