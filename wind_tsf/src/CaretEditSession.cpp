@@ -356,8 +356,23 @@ STDAPI CCaretEditSession::DoEditSession(TfEditCookie ec)
                                : 0;
                 if (dpi == 0)
                     dpi = 96;
-                _caretRect.bottom =
-                    _caretRect.top + MulDiv(WIND_DEFAULT_CARET_HEIGHT, (int)dpi, 96);
+                LONG bottom = _caretRect.top + MulDiv(WIND_DEFAULT_CARET_HEIGHT, (int)dpi, 96);
+                // ★ 宿主自己声明的显示区下沿若比这更近，就用它——那才是这一行文本真正的底，
+                // 补出来的默认高度只是没有更好信息时的替代品。
+                //
+                // 洛克王国实测（2026-09-13，200% 缩放）：组合矩形 top=2004、默认高度换算后
+                // 40px ⇒ 2044，而 GetScreenExt=(1066,1948,2174,2008) 的 bottom=2008 才是输入框
+                // 下沿，候选窗因此比输入框低了 36px（肉眼可见地偏下）。取 min 后正好贴合。
+                //
+                // 两类宿主都不会更差：给**输入框**矩形的（如本例）取到真实行底；给**整个多行
+                // 文本框**矩形的，组合在中间行时框底远在下方，min 自然落回默认高度，行为不变。
+                // 守卫 `> _caretRect.top` 保证结果高度为正——退化矩形会被下游当「没拿到坐标」。
+                if (hasScreenExt && rcScreenExt.bottom > _caretRect.top
+                    && rcScreenExt.bottom < bottom)
+                {
+                    bottom = rcScreenExt.bottom;
+                }
+                _caretRect.bottom = bottom;
             }
             _succeeded = TRUE;
             // 语义上锚点同样来自组合区（而非 selection），故沿用同一来源标记，
