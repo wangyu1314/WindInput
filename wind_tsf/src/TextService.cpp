@@ -945,7 +945,7 @@ private:
     std::wstring _text;
 };
 
-static const LONG DEFAULT_CARET_HEIGHT = 20;
+static const LONG DEFAULT_CARET_HEIGHT = WIND_DEFAULT_CARET_HEIGHT;
 
 CTextService::CTextService()
     : _refCount(1)
