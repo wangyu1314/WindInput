@@ -838,7 +838,7 @@ function Invoke-BuildStagesParallel ([string]$profile, [string]$outdir) {
 # ---------- 代码签名 (默认关闭; 需在命令里显式写 sign) ----------
 # 实现在 scripts\sign.ps1, 配置在 scripts\sign.local.ps1 (gitignore, 模板见 .example)。
 #
-# 【默认不签】—— 签名次数按月计费且有限, 一次全构建 5 个 PE、加打包 6 次。
+# 【默认不签】—— 签名次数按月计费且有限, 一次全构建 5 个 PE、加打包 7 次。
 # 开关是位置无关的命令关键字 sign (定义见文件末尾"入口"段):
 #     dev.ps1 1        只构建, 不签         dev.ps1 sign 1   构建并签名
 #     dev.ps1 8        出包, 不签           dev.ps1 sign 8   出包并签名
@@ -2140,7 +2140,7 @@ function Do-Unstage ([string]$zipPath) {
 
     Remove-Item $tmp -Recurse -Force
     Say "`n还原完成。下一步 (需先建立签名会话):"
-    Gray "  .\scripts\dev.ps1 sign 8s      出签名安装包 (5 个 PE + 外壳, 6 次配额)"
+    Gray "  .\scripts\dev.ps1 sign 8s      出签名安装包 (5 个 PE + 卸载器 + 外壳, 7 次配额)"
     Gray "  .\scripts\dev.ps1 sign 9s      出签名便携包 (PE 已签, 0 次配额)"
     Gray "  .\scripts\dev.ps1 verify-sign  验签 dist\"
     return $true
@@ -2529,7 +2529,7 @@ $allCmds = @($Commands | Where-Object { $_ -ne "" })
 
 # ---------- 签名开关: sign ----------
 # 签名【默认关闭】, 必须显式写 sign 才签。理由是签名次数按月计费且有限 ——
-# 一次全构建就是 5 个 PE, 加打包是 6 次; 若"配了证书就自动签", 日常 d1 几天就能把
+# 一次全构建就是 5 个 PE, 加打包是 7 次; 若"配了证书就自动签", 日常 d1 几天就能把
 # 一个月的额度烧光。宁可发版时多打一个词, 也不要每次构建都在扣费。
 #
 # ⚠️ 为什么是命令关键字而不是 -Sign 参数: 本脚本的 $Commands 用了
