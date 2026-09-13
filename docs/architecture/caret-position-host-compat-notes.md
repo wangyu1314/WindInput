@@ -166,11 +166,90 @@ CaretEditSession: IMM32 probe hwnd=0x... cand=1 style=0x... client=(x,y) screen=
 `cand=1` 且坐标合理 ⇒ 该宿主有救，可把这条接进降级链；`cand=0` 或 `无 IMC` ⇒ 与流放之路同类，无解。
 ⚠ 注意 `ptCurrentPos` 是**客户区**坐标，比对时别和屏幕坐标混参照系。
 
-**未实施**的修法方向，均需真机验证：
-① 降级采信组合起点前做越界校验（组合起点不在 `GetScreenExt` 内即不采信，让 caret 保持无效）；
-② 把上述 IMM32 坐标接进降级链（取决于探测数据）；
+① **已实施**（2026-09-13）：降级采信坐标前做越界校验，不在 `GetScreenExt` 内即不采信，
+让 caret 保持无效——流放之路的 `(13,44)` 与 `(3839,2063)` 都由它挡住。实现与失败关闭的
+理由见 §G 类。
+
+**仍未实施**的方向，均需真机验证：
+② 把上述 IMM32 坐标接进降级链（取决于探测数据，目前只有流放之路一个样本且它没设）；
 ③ 都拿不到时用窗口内兜底锚点（游戏聊天框多在下方，底部中央远比左上角合理），
 这需要把 `GetScreenExt` 经 IPC 传到服务端。
+
+### G 类：只对**非零长度** range 给矩形，且不填高度（**有解，已修**）
+
+代表：**洛克王国（虚幻引擎，`NRC-Win64-Shipping.exe`）**。
+
+⚠️ 与 F 类症状相似但**根子完全不同，别混**：F 类给的是**固定垃圾值**（整场不变），无解；
+G 类给的是**正确但残缺**的矩形，能修，而且已经修了。分辨方法：看坐标随输入**变不变**。
+
+2026-09-13 真机日志（`wind_tsf.NRC-Win64-Shipping.*.log`）的规律：
+
+```
+GetTextExt failed hr=0x80040505                    ← selection（零长度）→ TS_E_NOLAYOUT
+Composition start GetTextExt failed hr=0x80040505  ← 组合起点（零长度）→ 同样失败
+Composition rect (1353,1647,1399,1647) w=46 h=0    ← 组合整体（非零长度）→ 成功，但 bottom==top
+```
+
+**对零长度 range 一律回 `TS_E_NOLAYOUT`，只有非零长度 range 才给矩形，且只填水平信息。**
+宽度随编码串增长（16→19→25→28→46）、`left/top` 随输入移动 ⇒ 宿主**已经算完布局**，只是不填
+高度——这与「退化矩形 = 布局没算完」那个前提**正相反**，不该一并丢弃。
+
+修前三条路全断，退到兜底坐标 `(640,332)`，而真实位置 `(1353,1647)` 就摆在同一帧日志里没被用。
+
+**已实施**（`CaretEditSession.cpp` 的「★★ 二级降级」）：caret 与组合起点都拿不到、但组合整体
+矩形有效（宽>0）时，用它的左上角当 caret，高度依次由两个来源决定：
+
+1. `WIND_DEFAULT_CARET_HEIGHT` 按**宿主视角**的 DPI 换算（`GetDpiForWindow`）。⚠ 必须取宿主
+   视角而非主屏真值：`GetTextExt` 的坐标就在宿主的感知级别下，宿主 unaware 时它回 96、坐标也是
+   虚拟化的 96dpi，正好不该缩放；套用 `LangBarItemButton` 抬高线程感知级别那套反而错。
+   实测该宿主 200% 缩放 ⇒ 40px，而补 20 个设备像素只有真实行高一半，候选窗会压住正在输入的那行。
+2. 再与 `GetScreenExt` 的 `bottom` 取 **min**——宿主声明的显示区下沿才是这一行真正的底。
+   实测 `top=2004`、换算高度 40 ⇒ 2044，而显示区 `(1066,1948,2174,2008)` 的下沿是 2008，
+   取 min 后候选窗贴合输入框（否则低 36px，肉眼可见偏下）。
+
+⚠️ 二级降级**失败关闭**（`GetScreenExt` 拿不到就跳过），与一级降级的放行相反。两边代价不
+对称：跳过只是退回没有本级时的行为（无损）；放行则可能让 F 类那份垃圾坐标以
+`CARET_SRC_TSF_COMPOSITION` 的名义通过下游每一道闸，把"没拿到坐标"伪装成"拿到了权威坐标"。
+
+⚠️ 二级降级**不支持顶码偏移**（`_compStartOffset`）：整体矩形无法按 wchar 切分出余码段。
+已知取舍——这类宿主连组合起点都给不出，没有更精确的来源。
+
+## 二·五、垂直可用区：全屏时不该扣任务栏
+
+候选窗「下方放不下就上翻」的判据（`candidate_window.rs` 的 `place_window`）原本用 `rcWork`
+（排除任务栏），而候选窗真正的钳制函数 `clamp_content_to_monitor` 用的是 `rcMonitor` 并注明
+「允许摆到任务栏上方」——**判定比钳制严格**，于是判「放不下」的窗口实际本来放得下。
+
+全屏游戏下任务栏根本不可见，这条白扣得尤其冤。洛克王国实测：caret 底端 `y=2024` 时
+
+| 判据 | 下方可用 |
+|---|---|
+| `rcMonitor`（屏幕底 2160） | 134px |
+| `rcWork`（扣任务栏约 48px） | 86px |
+
+高度落在 86–134px 之间的候选窗被误判上翻，反过来遮住正在输入的那一行。
+
+**已实施**：按「前台窗口是否铺满 **caret 所在那块屏**」在 `rcMonitor` / `rcWork` 之间选。
+桌面行为一字未变，只有全屏那一种情形多出任务栏那条高度。
+
+★ 判据收口在 `wind-keys::foreground::foreground_covers_monitor`，**不要在别处重写**：几何比较
+只是它的一半，后面两道守卫才是它能用的原因，而那两道都是实测命中后补上的——
+
+- **DWM cloaked**：实测命中 ClickToDo 的 `IslandWindow`、**TextInputHost 的 `CoreWindow`**
+  （shell 输入宿主，与输入法场景高度相关）；
+- **属 explorer 进程**：实测命中 `XamlExplorerHostIslandWindow`（Win11 开始菜单/任务视图/搜索），
+  它 rect 精确等于显示器且**不是** cloaked，前一道拦不住。
+
+这两类窗口「焦点切换的一两毫秒中间态里可能短暂成为前台」，而 `place_window` 恰好在候选窗要显示
+的那一刻跑，正落在这个窗口期。漏掉守卫的后果：桌面上光标贴近屏幕底部时候选窗压住任务栏。
+
+⚠️ **不能**改用 `foreground_fullscreen_kind() == Covering`：那个用 `MonitorFromWindow(前台窗口)`，
+答的是「前台窗口自己那块屏」；这里必须问 caret 所在那块屏——多屏下 A 屏的全屏游戏不会隐藏
+B 屏的任务栏。
+
+⛔ 也**不要**改用 `SHQueryUserNotificationState` 判任务栏可见性：它对同一个 Dota `SDL_app` 窗口
+逐键抖动（一会儿 `D3dExclusive`、一会儿 `Covering`），会让候选窗在上下方之间反复跳。
+（判 D3D 独占态仍是它的正当用途，`foreground.rs` 判据①靠 300ms TTL 压住抖动。）
 
 ## 三、必测矩阵
 
@@ -222,6 +301,12 @@ caret_probe → 提前首显: ...
    与紧随的 `context GetScreenExt =`：若组合起点不在 `GetScreenExt` 内，是 F 类宿主给的固定垃圾
    坐标，不是我们的定位逻辑出错——别去查重锁/校正那条链。
 
+7. **游戏/UE 宿主里候选窗跑到无关位置？** 先看 TSF 日志有没有成对的
+   `GetTextExt failed hr=0x80040505` + `Composition rect (…) w=N h=0`：有就是 G 类，正常情况下
+   紧跟着应出现 `二级降级用组合整体矩形 … 补高度后 caret=(…)`；若该行缺失，看同帧的
+   `context GetScreenExt` ——越界校验拒掉（`判为垃圾坐标，不采信`）或 `GetScreenExt 不可用`
+   都会让二级降级失败关闭，退回兜底坐标。
+
 一个统计口径的提醒：**连打时每打一个字光标本就前移一个字宽，随之而来的 reshow 是正确的跟随，
 不是漂移。** 统计漂移率时必须只看「首显后、下一次按键前」的位置变化，否则会把正常跟随算成缺陷
 （本轮首版分析脚本因此把漂移率报成 25.2%，实际 3.6%）。
@@ -245,8 +330,10 @@ caret_probe → 提前首显: ...
 | `wind-coordinator/src/coordinator.rs` | `notify_ui_update` 里的位置计算与逃生口 |
 | `wind-config/src/app_compat.rs` | per-app 规则（`first_show_mode`、`caret_use_top`、`stale_probe_guard`、`composition_start_pair_guard`） |
 | `data/compat.toml` | 出厂 per-app 规则 |
-| `wind_tsf/src/CaretEditSession.cpp` | selection 无效时用 composition start 作 caret 的降级 |
+| `wind_tsf/src/CaretEditSession.cpp` | 两级降级（组合起点 / 组合整体矩形）、`GetScreenExt` 越界校验、IMM32 候选位置探测 |
 | `wind_tsf/src/TextService.cpp` | `OnAsyncCaretRectReady`、probe 发送与 caret source 标记 |
+| `wind-ui/src/candidate_window.rs` | `place_window`：上下翻转决策与垂直可用区（见 §二·五） |
+| `wind-keys/src/foreground.rs` | `foreground_covers_monitor`：铺满显示器判据 + cloaked / shell 两道守卫（**唯一实现**，勿重写） |
 
 > ⚠ 用户层 `%APPDATA%\WindInputDev\compat.toml` 的合并语义通常是「同名进程**整条**覆盖系统层」。
 > 排查「出厂规则不生效」时先看用户层有没有该进程的条目——菜单改回「跟随全局」曾会留下只剩
