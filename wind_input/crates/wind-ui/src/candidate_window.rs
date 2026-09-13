@@ -1872,7 +1872,21 @@ impl CandidateWindow {
                     ..Default::default()
                 };
                 if GetMonitorInfoW(mon, &mut mi).as_bool() {
-                    let wa = mi.rcWork;
+                    // 垂直可用区：前台铺满**caret 所在这块屏**时任务栏不可见，按整屏算；
+                    // 否则照旧避开任务栏。全屏游戏下仍按 rcWork 算就白白少掉一条任务栏的高度
+                    // （实测 48px）：洛克王国 caret 底端 y=2024 时，rcMonitor 下方尚有 134px、
+                    // rcWork 只剩 86px，高度落在其间的候选窗被误判"放不下"而上翻，反过来遮住
+                    // 正在输入的那一行。
+                    //
+                    // ⚠ 判据（含 DWM cloaked / shell 进程两道守卫）收口在 wind-keys，别在此重写：
+                    // 几何比较只是它的一半，那两道守卫才是它能用的原因。也**不能**改用
+                    // `foreground_fullscreen_kind() == Covering`——那个问的是"前台窗口自己那块屏"，
+                    // 而这里必须问 caret 所在那块屏：多屏下 A 屏的全屏游戏不会隐藏 B 屏的任务栏。
+                    let wa = if wind_keys::foreground::foreground_covers_monitor(&mi.rcMonitor) {
+                        mi.rcMonitor
+                    } else {
+                        mi.rcWork
+                    };
                     // 可行性判定用**净锚点**（不含主题偏移）：偏移只该改变距离，
                     // 不该左右「往上还是往下」——含偏移会让 off_y 越大越容易判成两边都
                     // 放不下，落回下方再被钳到屏幕底、压住光标。
